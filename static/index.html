@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>M&A CRM — Deal Origination</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">⬡</span>
+        <span class="brand-name">DealFlow CRM</span>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="dashboard">
+          <span class="nav-icon">▦</span> Dashboard
+        </button>
+        <button class="nav-item" data-view="pipeline">
+          <span class="nav-icon">◫</span> Pipeline
+        </button>
+        <button class="nav-item" data-view="companies">
+          <span class="nav-icon">⊞</span> Companies
+        </button>
+        <button class="nav-item" data-view="contacts">
+          <span class="nav-icon">◉</span> Contacts
+        </button>
+      </nav>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="topbar-title" id="topbar-title">Dashboard</div>
+        <div class="topbar-actions" id="topbar-actions"></div>
+      </header>
+
+      <div id="view-dashboard" class="view active"></div>
+      <div id="view-pipeline" class="view"></div>
+      <div id="view-companies" class="view"></div>
+      <div id="view-contacts" class="view"></div>
+    </main>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h2 id="modal-title"></h2>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
