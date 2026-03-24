@@ -1055,11 +1055,15 @@ async function handleFileSelected(e) {
   const file = e.target.files[0];
   if (!file) return;
   importFile = file;
-  e.target.value = '';  // reset so same file can be re-selected
+  e.target.value = '';
 
-  // Step 1: upload to /api/import/preview
+  await fetchPreview('');
+}
+
+async function fetchPreview(sheetName) {
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', importFile);
+  if (sheetName) formData.append('sheet_name', sheetName);
 
   modal.open('Import Companies', '<div style="text-align:center;padding:40px;color:var(--text-muted)">Parsing file...</div>');
   document.getElementById('modal').classList.add('modal-wide');
@@ -1089,6 +1093,22 @@ function showImportPreview() {
 
   const contactNote = d.contact_blocks?.length
     ? ` <strong>${d.contact_blocks.length} contact block(s)</strong> detected — contacts will be imported automatically.`
+    : '';
+
+  // Sheet switcher (only shown for multi-sheet Excel files)
+  const sheetSwitcherHtml = d.sheet_names?.length > 1
+    ? `<div class="alert alert-info" style="margin-bottom:12px;align-items:center">
+        <span class="alert-icon">📋</span>
+        <span>Sheet: &nbsp;
+          <select id="sheet-switcher" style="background:var(--surface-3);border:1px solid var(--border);color:var(--text);padding:3px 8px;border-radius:4px;font-size:13px">
+            ${d.sheet_names.map(s =>
+              `<option value="${escHtml(s)}" ${s === d.chosen_sheet ? 'selected' : ''}>${escHtml(s)}</option>`
+            ).join('')}
+          </select>
+        </span>
+       </div>`
+    : d.chosen_sheet
+    ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Reading sheet: <strong>${escHtml(d.chosen_sheet)}</strong></div>`
     : '';
 
   const warningsHtml = d.warnings.map(w =>
@@ -1139,6 +1159,7 @@ function showImportPreview() {
   ).join('');
 
   modal.open('Import — Column Mapping', `
+    ${sheetSwitcherHtml}
     ${warningsHtml}
     ${readyHtml}
 
@@ -1178,6 +1199,12 @@ function showImportPreview() {
 
   document.getElementById('btn-do-import').onclick = () => runImport();
 
+  // Sheet switcher — re-fetch preview with new sheet
+  const switcher = document.getElementById('sheet-switcher');
+  if (switcher) {
+    switcher.onchange = () => fetchPreview(switcher.value);
+  }
+
   document.querySelectorAll('.mapping-select').forEach(sel => {
     sel.onchange = () => {
       const field = sel.dataset.field;
@@ -1193,6 +1220,9 @@ async function runImport() {
   const formData = new FormData();
   formData.append('file', importFile);
   formData.append('mapping_json', JSON.stringify(importPreviewData.mapping));
+  if (importPreviewData.chosen_sheet) {
+    formData.append('sheet_name', importPreviewData.chosen_sheet);
+  }
 
   document.getElementById('btn-do-import').disabled = true;
   document.getElementById('btn-do-import').textContent = 'Importing...';

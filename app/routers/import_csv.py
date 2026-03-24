@@ -160,6 +160,30 @@ def normalise(s: str) -> str:
     return re.sub(r"[\s_\-]+", " ", str(s).strip().lower())
 
 
+def pick_sheet(content: bytes, filename: str) -> tuple[pd.DataFrame, list[str], str]:
+    """
+    For Excel files: return (dataframe, all_sheet_names, chosen_sheet_name).
+    Prefers a sheet whose name contains 'compan' (case-insensitive),
+    falling back to the first sheet.
+    For CSV files: returns (dataframe, [], "").
+    """
+    if not filename.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_csv(io.BytesIO(content), dtype=str)
+        return df, [], ""
+
+    xl = pd.ExcelFile(io.BytesIO(content))
+    sheet_names: list[str] = xl.sheet_names
+
+    chosen = sheet_names[0]
+    for name in sheet_names:
+        if "compan" in name.lower():
+            chosen = name
+            break
+
+    df = xl.parse(chosen, dtype=str)
+    return df, sheet_names, chosen
+
+
 def detect_mapping(columns: list[str]) -> dict[str, str | None]:
     norm_to_original = {normalise(c): c for c in columns}
     mapping: dict[str, str | None] = {}
@@ -211,14 +235,27 @@ def detect_contact_columns(columns: list[str]) -> list[dict[str, str | None]]:
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.post("/preview")
-async def preview_import(file: UploadFile = File(...)):
+async def preview_import(file: UploadFile = File(...), sheet_name: str = Form(default="")):
     content = await file.read()
     filename = file.filename or ""
 
     try:
         if filename.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content), dtype=str)
+            xl = pd.ExcelFile(io.BytesIO(content))
+            sheet_names = xl.sheet_names
+            # Use explicitly requested sheet, auto-detect "companies" sheet, or first sheet
+            if sheet_name and sheet_name in sheet_names:
+                chosen = sheet_name
+            else:
+                chosen = sheet_names[0]
+                for name in sheet_names:
+                    if "compan" in name.lower():
+                        chosen = name
+                        break
+            df = xl.parse(chosen, dtype=str)
         else:
+            sheet_names = []
+            chosen = ""
             df = pd.read_csv(io.BytesIO(content), dtype=str)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
@@ -261,6 +298,8 @@ async def preview_import(file: UploadFile = File(...)):
         "warnings": warnings,
         "mapped_fields": mapped_fields,
         "geo_parts": geo_parts,
+        "sheet_names": sheet_names,
+        "chosen_sheet": chosen,
     }
 
 
@@ -268,6 +307,7 @@ async def preview_import(file: UploadFile = File(...)):
 async def confirm_import(
     file: UploadFile = File(...),
     mapping_json: str = Form(default=""),
+    sheet_name: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
     content = await file.read()
@@ -275,7 +315,17 @@ async def confirm_import(
 
     try:
         if filename.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content), dtype=str)
+            xl = pd.ExcelFile(io.BytesIO(content))
+            sheet_names = xl.sheet_names
+            if sheet_name and sheet_name in sheet_names:
+                chosen = sheet_name
+            else:
+                chosen = sheet_names[0]
+                for name in sheet_names:
+                    if "compan" in name.lower():
+                        chosen = name
+                        break
+            df = xl.parse(chosen, dtype=str)
         else:
             df = pd.read_csv(io.BytesIO(content), dtype=str)
     except Exception as e:
