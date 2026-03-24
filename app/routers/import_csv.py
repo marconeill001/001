@@ -20,6 +20,13 @@ COLUMN_ALIASES: dict[str, list[str]] = {
         "name", "company name", "company", "organization", "organisation",
         "business name", "firm", "entity", "target", "target name",
         "account name", "account", "corp name", "legal name",
+        # contact-centric exports (Salesforce, HubSpot, LinkedIn, etc.)
+        "contact name", "contact company", "contact organization",
+        "contact organisation", "contact account", "contact firm",
+        # database / research tool exports
+        "issuer name", "issuer", "portfolio company", "investee",
+        "deal target", "co. name", "co name", "company / organization",
+        "company/organization", "company or organization",
     ],
     "industry": [
         "industry", "sector", "industry sector", "business type",
