@@ -7,7 +7,7 @@ from sqlalchemy import func
 from .database import engine, get_db
 from . import models
 from .models import Company, Contact, Deal, Note, DealStage, Priority
-from .routers import companies, contacts, deals
+from .routers import companies, contacts, deals, import_csv
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -16,6 +16,7 @@ app = FastAPI(title="M&A Deal Origination CRM", version="1.0.0")
 app.include_router(companies.router)
 app.include_router(contacts.router)
 app.include_router(deals.router)
+app.include_router(import_csv.router)
 
 
 @app.get("/api/dashboard")

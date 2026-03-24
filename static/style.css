@@ -481,3 +481,49 @@ select.search-input { cursor: pointer; }
 .link:hover { text-decoration: underline; }
 
 .divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* Sidebar footer */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 12px 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Import / alerts */
+.alert {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.alert-warn { background: #451a03; border: 1px solid #92400e; color: #fcd34d; }
+.alert-success { background: #022c22; border: 1px solid #065f46; color: #6ee7b7; }
+.alert-info { background: #0c2340; border: 1px solid #1e40af; color: #93c5fd; }
+.alert-icon { flex-shrink: 0; font-size: 15px; }
+
+/* Column mapping table */
+.mapping-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+.mapping-table th {
+  text-align: left; padding: 8px 10px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-muted); border-bottom: 1px solid var(--border);
+}
+.mapping-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.mapping-table select { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+
+/* Preview table */
+.preview-scroll { overflow-x: auto; margin-bottom: 12px; }
+.preview-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 12px; }
+.preview-table th { padding: 7px 10px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); white-space: nowrap; font-weight: 500; }
+.preview-table td { padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Import success */
+.import-result { text-align: center; padding: 30px 20px; }
+.import-result-num { font-size: 48px; font-weight: 700; color: var(--green); line-height: 1; }
+.import-result-label { font-size: 14px; color: var(--text-muted); margin-top: 8px; }
+
+/* Modal wide variant */
+.modal.modal-wide { max-width: 860px; }

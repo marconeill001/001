@@ -1018,11 +1018,234 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 
+// ─── CSV / Excel Import ───────────────────────────────────────────────────────
+
+// Human-readable labels for our internal field names
+const FIELD_LABELS = {
+  name: 'Company Name',
+  industry: 'Industry',
+  sub_industry: 'Sub-Industry',
+  revenue_range: 'Revenue Range',
+  ebitda_range: 'EBITDA Range',
+  employee_count: 'Employees',
+  ownership_type: 'Ownership Type',
+  geography: 'Geography',
+  website: 'Website',
+  description: 'Description',
+  deal_rationale: 'Deal Rationale',
+  source: 'Source',
+};
+
+const REQUIRED_FIELDS = ['name'];
+
+// Sector display names (matches backend SECTOR_RULES order)
+const SECTORS = ['Financial', 'B&P Services', 'Industry', 'Technology', 'Healthcare', 'Consumer'];
+
+let importPreviewData = null;   // last /preview response
+let importFile = null;          // the File object
+
+function openImportFlow() {
+  document.getElementById('csv-file-input').click();
+}
+
+async function handleFileSelected(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  importFile = file;
+  e.target.value = '';  // reset so same file can be re-selected
+
+  // Step 1: upload to /api/import/preview
+  const formData = new FormData();
+  formData.append('file', file);
+
+  modal.open('Import Companies', '<div style="text-align:center;padding:40px;color:var(--text-muted)">Parsing file...</div>');
+  document.getElementById('modal').classList.add('modal-wide');
+
+  try {
+    const r = await fetch('/api/import/preview', { method: 'POST', body: formData });
+    if (!r.ok) throw new Error(await r.text());
+    importPreviewData = await r.json();
+    showImportPreview();
+  } catch(err) {
+    modal.open('Import Error', `<div class="alert alert-warn"><span class="alert-icon">⚠</span><span>${err.message}</span></div>`);
+    document.getElementById('modal').classList.add('modal-wide');
+  }
+}
+
+function showImportPreview() {
+  const d = importPreviewData;
+  if (!d) return;
+
+  const mapping = d.mapping;
+  const hasNameCol = !!mapping.name;
+
+  // Sector detection: look at sample for unique industry values
+  const indCol = mapping.industry;
+  const uniqueIndustries = indCol
+    ? [...new Set(d.sample.map(r => r[indCol]).filter(Boolean))].slice(0, 4)
+    : [];
+
+  // Build sector auto-classify note
+  let sectorNote = '';
+  if (uniqueIndustries.length) {
+    // Simplistic display of what sectors were detected
+    const detectedSectors = [...new Set(d.sample.map(r => r._sector).filter(Boolean))];
+    if (detectedSectors.length) {
+      sectorNote = `Sectors will be auto-classified as <strong>${detectedSectors.join('</strong>, <strong>')}</strong>.`;
+    }
+  }
+
+  const warningsHtml = d.warnings.map(w =>
+    `<div class="alert alert-warn"><span class="alert-icon">▲</span><span>${w}</span></div>`
+  ).join('');
+
+  const readyHtml = hasNameCol
+    ? `<div class="alert alert-info" style="margin-bottom:0">
+        <span class="alert-icon">ℹ</span>
+        <span>Ready to import <strong>${d.total_rows} companies</strong> from ${escHtml(d.filename)}.${sectorNote ? ' ' + sectorNote : ''}</span>
+       </div>`
+    : '';
+
+  // Column mapping table (only show fields that were auto-mapped or have a column to map to)
+  const mappingRows = Object.entries(FIELD_LABELS).map(([field, label]) => {
+    const currentCol = mapping[field];
+    const required = REQUIRED_FIELDS.includes(field);
+    const options = ['(none)', ...d.columns].map(col =>
+      `<option value="${escHtml(col)}" ${col === (currentCol || '(none)') ? 'selected' : ''}>${escHtml(col)}</option>`
+    ).join('');
+    return `<tr>
+      <td>${label}${required ? ' <span style="color:var(--red)">*</span>' : ''}</td>
+      <td><select class="mapping-select" data-field="${field}">${options}</select></td>
+      <td style="color:var(--text-muted);font-size:11px">${currentCol ? escHtml(currentCol) : '<em>unmapped</em>'}</td>
+    </tr>`;
+  }).join('');
+
+  // Preview table (first 5 rows of raw file)
+  const previewCols = d.columns.slice(0, 8);
+  const previewRows = d.sample.map(row =>
+    `<tr>${previewCols.map(col => `<td title="${escHtml(String(row[col]||''))}">${escHtml(String(row[col]||''))}</td>`).join('')}</tr>`
+  ).join('');
+
+  modal.open('Import Companies — Column Mapping', `
+    ${warningsHtml}
+    ${readyHtml}
+
+    <hr class="divider" />
+
+    <details open>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim);margin-bottom:12px;user-select:none">
+        Column Mapping (${d.total_rows} rows · ${d.columns.length} columns detected)
+      </summary>
+      <table class="mapping-table">
+        <thead><tr><th>CRM Field</th><th>CSV Column</th><th>Auto-detected</th></tr></thead>
+        <tbody>${mappingRows}</tbody>
+      </table>
+    </details>
+
+    <details>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim);margin-bottom:12px;user-select:none">
+        Preview (first ${d.sample.length} rows)
+      </summary>
+      <div class="preview-scroll">
+        <table class="preview-table">
+          <thead><tr>${previewCols.map(c => `<th>${escHtml(c)}</th>`).join('')}</tr></thead>
+          <tbody>${previewRows}</tbody>
+        </table>
+      </div>
+    </details>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="modal.close()">← Back</button>
+      <button class="btn btn-primary" id="btn-do-import" ${hasNameCol ? '' : 'disabled title="Fix column mapping first"'}>
+        Import ${d.total_rows} rows
+      </button>
+    </div>
+  `);
+  document.getElementById('modal').classList.add('modal-wide');
+
+  // Wire up Import button
+  document.getElementById('btn-do-import').onclick = () => runImport();
+
+  // Update mapping live when user changes a select
+  document.querySelectorAll('.mapping-select').forEach(sel => {
+    sel.onchange = () => {
+      const field = sel.dataset.field;
+      importPreviewData.mapping[field] = sel.value === '(none)' ? null : sel.value;
+      // Re-enable import button if name is now mapped
+      const btn = document.getElementById('btn-do-import');
+      if (btn) btn.disabled = !importPreviewData.mapping.name;
+    };
+  });
+}
+
+async function runImport() {
+  if (!importFile || !importPreviewData) return;
+  const formData = new FormData();
+  formData.append('file', importFile);
+  formData.append('mapping_json', JSON.stringify(importPreviewData.mapping));
+
+  document.getElementById('btn-do-import').disabled = true;
+  document.getElementById('btn-do-import').textContent = 'Importing...';
+
+  try {
+    const r = await fetch('/api/import/confirm', { method: 'POST', body: formData });
+    if (!r.ok) throw new Error(await r.text());
+    const result = await r.json();
+    showImportResult(result);
+  } catch(err) {
+    modal.open('Import Failed', `<div class="alert alert-warn"><span class="alert-icon">⚠</span><span>${err.message}</span></div>`);
+    document.getElementById('modal').classList.add('modal-wide');
+  }
+}
+
+function showImportResult(result) {
+  const errHtml = result.errors.length
+    ? `<div class="alert alert-warn" style="margin-top:16px;text-align:left"><span class="alert-icon">⚠</span>
+        <div><strong>${result.errors.length} row(s) had errors:</strong><br/>${result.errors.map(escHtml).join('<br/>')}</div>
+       </div>`
+    : '';
+
+  modal.open('Import Complete', `
+    <div class="import-result">
+      <div class="import-result-num">${result.created}</div>
+      <div class="import-result-label">companies imported successfully</div>
+      ${result.skipped ? `<div style="color:var(--text-muted);font-size:12px;margin-top:8px">${result.skipped} rows skipped (empty name)</div>` : ''}
+    </div>
+    ${errHtml}
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="modal.close(); navigate('companies')">View Companies</button>
+    </div>
+  `);
+  document.getElementById('modal').classList.add('modal-wide');
+
+  // Refresh companies view if open
+  if (currentView === 'companies') renderCompanies();
+  if (currentView === 'dashboard') renderDashboard();
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ─── Debounce ─────────────────────────────────────────────────────────────────
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
   enums = await api.get('/api/enums');
   navigate('dashboard');
+
+  document.getElementById('btn-import-csv').onclick = openImportFlow;
+  document.getElementById('csv-file-input').onchange = handleFileSelected;
 }
 
 init();

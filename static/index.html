@@ -27,7 +27,14 @@
           <span class="nav-icon">◉</span> Contacts
         </button>
       </nav>
+      <div class="sidebar-footer">
+        <button class="btn btn-ghost" id="btn-import-csv" style="width:100%;justify-content:flex-start;gap:8px;font-size:13px">
+          <span>⬆</span> Import CSV / Excel
+        </button>
+      </div>
     </aside>
+    <!-- Hidden file input for CSV/Excel upload -->
+    <input type="file" id="csv-file-input" accept=".csv,.xlsx,.xls" style="display:none" />
 
     <main class="main-content">
       <header class="topbar">
