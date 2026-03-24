@@ -1,29 +1,25 @@
 import io
+import json
 import re
-from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Company, OwnershipType
+from ..models import Company, Contact, OwnershipType
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
 # ─── Column alias mapping ─────────────────────────────────────────────────────
-# Maps our internal field names to lists of accepted CSV column header variants
-# (all compared lowercase, stripped)
 
 COLUMN_ALIASES: dict[str, list[str]] = {
     "name": [
         "name", "company name", "company", "organization", "organisation",
         "business name", "firm", "entity", "target", "target name",
         "account name", "account", "corp name", "legal name",
-        # contact-centric exports (Salesforce, HubSpot, LinkedIn, etc.)
         "contact name", "contact company", "contact organization",
         "contact organisation", "contact account", "contact firm",
-        # database / research tool exports
         "issuer name", "issuer", "portfolio company", "investee",
         "deal target", "co. name", "co name", "company / organization",
         "company/organization", "company or organization",
@@ -31,37 +27,52 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     "industry": [
         "industry", "sector", "industry sector", "business type",
         "vertical", "market", "sub-industry", "sub industry",
+        "naics", "sic", "primary industry",
     ],
     "sub_industry": [
         "sub industry", "sub-industry", "sub_industry", "subsector",
-        "niche", "category",
+        "niche", "category", "secondary industry",
     ],
     "revenue_range": [
         "revenue", "revenue range", "annual revenue", "revenues",
         "turnover", "sales", "annual sales", "rev", "revenue ($m)",
-        "revenue (m)", "rev range", "revenue size", "ltr", "ltm revenue",
+        "revenue (m)", "rev range", "revenue size", "ltm revenue", "ltr",
+        # Specific formats from export tools
+        "revenue (musd) (if estimate, max 1b)", "revenue (musd)",
+        "revenue (usd)", "revenue usd", "revenue ($)", "arr", "mrr",
+        "annual recurring revenue", "total revenue",
     ],
     "ebitda_range": [
         "ebitda", "ebitda range", "ebitda ($m)", "ebitda (m)",
-        "earnings", "operating income", "profit",
+        "earnings", "operating income", "profit", "ebitda (musd)",
     ],
     "employee_count": [
         "employees", "employee count", "headcount", "staff", "# employees",
         "no. employees", "num employees", "workforce", "fte",
         "number of employees", "employees (#)",
+        # LinkedIn-style exports
+        "headcount range (linkedin)", "employees count (linkedin)",
+        "linkedin headcount", "linkedin employees", "company size",
+        "employee range", "headcount range", "employees count",
+        "number of employees (linkedin)",
     ],
     "ownership_type": [
         "ownership", "ownership type", "type", "ownership structure",
-        "shareholder", "owner type", "company type",
+        "shareholder", "owner type", "company type", "company type/stage",
     ],
+    # geography is handled specially (City + Region + Country combined)
     "geography": [
-        "geography", "location", "region", "country", "state",
-        "city", "hq", "headquarters", "hq location", "office location",
-        "domicile", "market geography",
+        "geography", "location", "hq", "headquarters", "hq location",
+        "office location", "domicile", "market geography",
+        "country", "country/region", "hq country",
     ],
+    # sub-geography fields — combined at import time
+    "_city": ["city", "hq city", "office city"],
+    "_region": ["region", "state", "province", "hq region", "hq state"],
+    "_country": ["country", "hq country", "country/region", "nation"],
     "website": [
         "website", "url", "web", "domain", "homepage", "site",
-        "web address", "company url",
+        "web address", "company url", "company website",
     ],
     "description": [
         "description", "notes", "about", "overview", "summary",
@@ -75,11 +86,25 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     ],
     "source": [
         "source", "lead source", "origin", "referral", "sourced from",
-        "origination source", "channel",
+        "origination source", "channel", "list status", "status",
+        "list name",
     ],
 }
 
-# ─── Sector auto-classification ────────────────────────────────────────────────
+# Contact column patterns for numbered contact exports (e.g. "1. Contact Full Name")
+CONTACT_FIELD_PATTERNS: dict[str, list[str]] = {
+    "full_name": ["contact full name", "contact name"],
+    "first_name": ["contact first name"],
+    "last_name": ["contact last name"],
+    "title": ["contact title", "contact job title", "contact position"],
+    "email": ["contact primary e-mail address", "contact email", "contact e-mail",
+               "contact primary email", "contact email address"],
+    "phone": ["contact primary phone number", "contact phone", "contact mobile",
+              "contact direct phone", "contact phone number"],
+    "linkedin_url": ["contact linkedin", "contact linkedin url", "contact linkedin profile"],
+}
+
+# ─── Sector auto-classification ───────────────────────────────────────────────
 
 SECTOR_RULES: list[tuple[str, list[str]]] = [
     ("Financial", [
@@ -129,14 +154,13 @@ def classify_sector(industry_text: str | None) -> str | None:
     return None
 
 
-# ─── Column detection ──────────────────────────────────────────────────────────
+# ─── Column detection ─────────────────────────────────────────────────────────
 
 def normalise(s: str) -> str:
     return re.sub(r"[\s_\-]+", " ", str(s).strip().lower())
 
 
 def detect_mapping(columns: list[str]) -> dict[str, str | None]:
-    """Return {internal_field: csv_column | None} for each field we care about."""
     norm_to_original = {normalise(c): c for c in columns}
     mapping: dict[str, str | None] = {}
     for field, aliases in COLUMN_ALIASES.items():
@@ -149,11 +173,45 @@ def detect_mapping(columns: list[str]) -> dict[str, str | None]:
     return mapping
 
 
+def detect_contact_columns(columns: list[str]) -> list[dict[str, str | None]]:
+    """
+    Detect numbered contact column blocks, e.g. "1. Contact Full Name",
+    "2. Contact Full Name", etc. Returns one dict per contact number found.
+    """
+    norm_cols = {normalise(c): c for c in columns}
+
+    # Find all contact block numbers present
+    numbers: set[str] = set()
+    for nc in norm_cols:
+        m = re.match(r"^(\d+)\.\s*contact\s+", nc)
+        if m:
+            numbers.add(m.group(1))
+
+    if not numbers:
+        return []
+
+    result = []
+    for num in sorted(numbers, key=int):
+        block: dict[str, str | None] = {"_num": num}
+        for field, aliases in CONTACT_FIELD_PATTERNS.items():
+            matched = None
+            for alias in aliases:
+                # Normalise the full candidate so hyphens/spacing are consistent
+                candidate = normalise(f"{num}. {alias}")
+                if candidate in norm_cols:
+                    matched = norm_cols[candidate]
+                    break
+            block[field] = matched
+        # Only include blocks that have at least a name or email
+        if block.get("full_name") or block.get("email"):
+            result.append(block)
+    return result
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.post("/preview")
 async def preview_import(file: UploadFile = File(...)):
-    """Parse the uploaded CSV/Excel and return column mapping + sample rows."""
     content = await file.read()
     filename = file.filename or ""
 
@@ -170,44 +228,48 @@ async def preview_import(file: UploadFile = File(...)):
 
     columns = list(df.columns)
     mapping = detect_mapping(columns)
+    contact_blocks = detect_contact_columns(columns)
 
-    # Build sample rows (first 5)
     sample = df.head(5).to_dict(orient="records")
 
-    # Classify sectors for preview if we have an industry column
     ind_col = mapping.get("industry")
     if ind_col:
         for row in sample:
             row["_sector"] = classify_sector(row.get(ind_col))
 
-    # Warnings
     warnings = []
     if not mapping.get("name"):
         warnings.append(
             '"Name" column not found — this is required to import companies. '
-            f'Check the CSV has a column called exactly Name. '
-            f'Available columns: {", ".join(columns[:10])}'
+            f'Available columns: {", ".join(columns[:15])}'
+            + ("..." if len(columns) > 15 else "")
         )
+
+    # Summary of what will be imported
+    mapped_fields = [f for f, col in mapping.items()
+                     if col and not f.startswith("_")]
+    # Also count geography sub-fields
+    geo_parts = [f for f in ("_city", "_region", "_country") if mapping.get(f)]
 
     return {
         "filename": filename,
         "total_rows": len(df),
         "columns": columns,
         "mapping": mapping,
+        "contact_blocks": contact_blocks,
         "sample": sample,
         "warnings": warnings,
+        "mapped_fields": mapped_fields,
+        "geo_parts": geo_parts,
     }
 
 
 @router.post("/confirm")
 async def confirm_import(
     file: UploadFile = File(...),
-    mapping_json: str = "",
+    mapping_json: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
-    """Actually import companies using the provided column mapping."""
-    import json
-
     content = await file.read()
     filename = file.filename or ""
 
@@ -223,8 +285,11 @@ async def confirm_import(
     df = df.where(pd.notna(df), None)
 
     try:
-        mapping: dict[str, str | None] = json.loads(mapping_json)
+        mapping: dict[str, str | None] = json.loads(mapping_json) if mapping_json else {}
     except Exception:
+        mapping = {}
+
+    if not mapping:
         mapping = detect_mapping(list(df.columns))
 
     if not mapping.get("name"):
@@ -233,12 +298,35 @@ async def confirm_import(
             detail='"Name" column is required. Please map a column to the company name field.',
         )
 
+    contact_blocks = detect_contact_columns(list(df.columns))
+
     def get_val(row: dict, field: str) -> str | None:
         col = mapping.get(field)
         if not col:
             return None
         val = row.get(col)
-        return str(val).strip() if val else None
+        return str(val).strip() if val and str(val).strip() not in ("nan", "None", "") else None
+
+    def build_geography(row: dict) -> str | None:
+        # Prefer explicit geography column; otherwise combine city/region/country
+        geo = get_val(row, "geography")
+        if geo:
+            return geo
+        parts = []
+        for sub in ("_city", "_region", "_country"):
+            col = mapping.get(sub)
+            if col:
+                val = row.get(col)
+                if val and str(val).strip() not in ("nan", "None", ""):
+                    parts.append(str(val).strip())
+        # De-duplicate while preserving order
+        seen: set[str] = set()
+        unique_parts = []
+        for p in parts:
+            if p.lower() not in seen:
+                seen.add(p.lower())
+                unique_parts.append(p)
+        return ", ".join(unique_parts) if unique_parts else None
 
     def map_ownership(raw: str | None) -> OwnershipType:
         if not raw:
@@ -253,6 +341,7 @@ async def confirm_import(
         return OwnershipType.private
 
     created = 0
+    contacts_created = 0
     skipped = 0
     errors: list[str] = []
 
@@ -262,34 +351,54 @@ async def confirm_import(
             skipped += 1
             continue
         try:
-            industry = get_val(row, "industry")
-            # Auto-classify sector if industry is unmapped and we have raw industry data
-            if not mapping.get("industry"):
-                # Try to find any column that looks like sector/industry
-                for col in df.columns:
-                    n = normalise(col)
-                    if any(kw in n for kw in ["industry", "sector", "vertical"]):
-                        industry = str(row.get(col, "")).strip() or None
-                        break
-
-            ownership_raw = get_val(row, "ownership_type")
-            ownership = map_ownership(ownership_raw)
-
             company = Company(
                 name=name,
-                industry=industry,
+                industry=get_val(row, "industry"),
                 sub_industry=get_val(row, "sub_industry"),
                 revenue_range=get_val(row, "revenue_range"),
                 ebitda_range=get_val(row, "ebitda_range"),
                 employee_count=get_val(row, "employee_count"),
-                ownership_type=ownership,
-                geography=get_val(row, "geography"),
+                ownership_type=map_ownership(get_val(row, "ownership_type")),
+                geography=build_geography(row),
                 website=get_val(row, "website"),
                 description=get_val(row, "description"),
                 deal_rationale=get_val(row, "deal_rationale"),
                 source=get_val(row, "source"),
             )
             db.add(company)
+            db.flush()  # get company.id before contacts
+
+            # Import contacts from numbered blocks (e.g. "1. Contact Full Name")
+            for block in contact_blocks:
+                def bval(field: str) -> str | None:
+                    col = block.get(field)
+                    if not col:
+                        return None
+                    val = row.get(col)
+                    return str(val).strip() if val and str(val).strip() not in ("nan", "None", "") else None
+
+                # Build contact name: prefer full name, else first+last
+                contact_name = bval("full_name")
+                if not contact_name:
+                    first = bval("first_name") or ""
+                    last = bval("last_name") or ""
+                    contact_name = f"{first} {last}".strip() or None
+
+                if not contact_name:
+                    continue
+
+                contact = Contact(
+                    company_id=company.id,
+                    name=contact_name,
+                    title=bval("title"),
+                    email=bval("email"),
+                    phone=bval("phone"),
+                    linkedin_url=bval("linkedin_url"),
+                    is_primary=1 if block["_num"] == "1" else 0,
+                )
+                db.add(contact)
+                contacts_created += 1
+
             created += 1
         except Exception as e:
             errors.append(f"Row {i + 2}: {e}")
@@ -298,6 +407,7 @@ async def confirm_import(
 
     return {
         "created": created,
+        "contacts_created": contacts_created,
         "skipped": skipped,
         "errors": errors[:20],
     }

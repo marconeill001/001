@@ -1029,7 +1029,10 @@ const FIELD_LABELS = {
   ebitda_range: 'EBITDA Range',
   employee_count: 'Employees',
   ownership_type: 'Ownership Type',
-  geography: 'Geography',
+  geography: 'Geography (combined)',
+  _city: 'Geography › City',
+  _region: 'Geography › Region',
+  _country: 'Geography › Country',
   website: 'Website',
   description: 'Description',
   deal_rationale: 'Deal Rationale',
@@ -1079,21 +1082,14 @@ function showImportPreview() {
   const mapping = d.mapping;
   const hasNameCol = !!mapping.name;
 
-  // Sector detection: look at sample for unique industry values
-  const indCol = mapping.industry;
-  const uniqueIndustries = indCol
-    ? [...new Set(d.sample.map(r => r[indCol]).filter(Boolean))].slice(0, 4)
-    : [];
+  const detectedSectors = [...new Set(d.sample.map(r => r._sector).filter(Boolean))];
+  const sectorNote = detectedSectors.length
+    ? ` Sectors will be auto-classified as <strong>${detectedSectors.join('</strong>, <strong>')}</strong>.`
+    : '';
 
-  // Build sector auto-classify note
-  let sectorNote = '';
-  if (uniqueIndustries.length) {
-    // Simplistic display of what sectors were detected
-    const detectedSectors = [...new Set(d.sample.map(r => r._sector).filter(Boolean))];
-    if (detectedSectors.length) {
-      sectorNote = `Sectors will be auto-classified as <strong>${detectedSectors.join('</strong>, <strong>')}</strong>.`;
-    }
-  }
+  const contactNote = d.contact_blocks?.length
+    ? ` <strong>${d.contact_blocks.length} contact block(s)</strong> detected — contacts will be imported automatically.`
+    : '';
 
   const warningsHtml = d.warnings.map(w =>
     `<div class="alert alert-warn"><span class="alert-icon">▲</span><span>${w}</span></div>`
@@ -1102,31 +1098,47 @@ function showImportPreview() {
   const readyHtml = hasNameCol
     ? `<div class="alert alert-info" style="margin-bottom:0">
         <span class="alert-icon">ℹ</span>
-        <span>Ready to import <strong>${d.total_rows} companies</strong> from ${escHtml(d.filename)}.${sectorNote ? ' ' + sectorNote : ''}</span>
+        <span>Ready to import <strong>${d.total_rows} companies</strong> from ${escHtml(d.filename)}.${sectorNote}${contactNote}</span>
        </div>`
     : '';
 
-  // Column mapping table (only show fields that were auto-mapped or have a column to map to)
   const mappingRows = Object.entries(FIELD_LABELS).map(([field, label]) => {
     const currentCol = mapping[field];
     const required = REQUIRED_FIELDS.includes(field);
     const options = ['(none)', ...d.columns].map(col =>
       `<option value="${escHtml(col)}" ${col === (currentCol || '(none)') ? 'selected' : ''}>${escHtml(col)}</option>`
     ).join('');
+    const status = currentCol
+      ? `<span style="color:var(--green);font-size:11px">✓ ${escHtml(currentCol)}</span>`
+      : `<span style="color:var(--text-muted);font-size:11px;font-style:italic">unmapped</span>`;
     return `<tr>
       <td>${label}${required ? ' <span style="color:var(--red)">*</span>' : ''}</td>
       <td><select class="mapping-select" data-field="${field}">${options}</select></td>
-      <td style="color:var(--text-muted);font-size:11px">${currentCol ? escHtml(currentCol) : '<em>unmapped</em>'}</td>
+      <td>${status}</td>
     </tr>`;
   }).join('');
 
-  // Preview table (first 5 rows of raw file)
+  // Contact blocks summary
+  const contactBlocksHtml = d.contact_blocks?.length ? `
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim);margin-bottom:8px;user-select:none">
+        Contact Columns Detected (${d.contact_blocks.length} block${d.contact_blocks.length > 1 ? 's' : ''})
+      </summary>
+      ${d.contact_blocks.map(b => `
+        <div style="padding:8px 12px;background:var(--surface-2);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;font-size:12px">
+          <strong>Contact ${b._num}</strong> —
+          ${[['Name', b.full_name], ['Title', b.title], ['Email', b.email], ['Phone', b.phone], ['LinkedIn', b.linkedin_url]]
+            .filter(([,v]) => v).map(([k,v]) => `${k}: <span style="color:var(--text-muted)">${escHtml(v)}</span>`).join(' · ')}
+        </div>
+      `).join('')}
+    </details>` : '';
+
   const previewCols = d.columns.slice(0, 8);
   const previewRows = d.sample.map(row =>
     `<tr>${previewCols.map(col => `<td title="${escHtml(String(row[col]||''))}">${escHtml(String(row[col]||''))}</td>`).join('')}</tr>`
   ).join('');
 
-  modal.open('Import Companies — Column Mapping', `
+  modal.open('Import — Column Mapping', `
     ${warningsHtml}
     ${readyHtml}
 
@@ -1134,17 +1146,18 @@ function showImportPreview() {
 
     <details open>
       <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim);margin-bottom:12px;user-select:none">
-        Column Mapping (${d.total_rows} rows · ${d.columns.length} columns detected)
+        Company Field Mapping (${d.total_rows} rows · ${d.columns.length} columns)
       </summary>
       <table class="mapping-table">
-        <thead><tr><th>CRM Field</th><th>CSV Column</th><th>Auto-detected</th></tr></thead>
+        <thead><tr><th>CRM Field</th><th>Map to CSV column</th><th>Auto-detected</th></tr></thead>
         <tbody>${mappingRows}</tbody>
       </table>
+      ${contactBlocksHtml}
     </details>
 
     <details>
       <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim);margin-bottom:12px;user-select:none">
-        Preview (first ${d.sample.length} rows)
+        Raw Preview (first ${d.sample.length} rows)
       </summary>
       <div class="preview-scroll">
         <table class="preview-table">
@@ -1163,15 +1176,12 @@ function showImportPreview() {
   `);
   document.getElementById('modal').classList.add('modal-wide');
 
-  // Wire up Import button
   document.getElementById('btn-do-import').onclick = () => runImport();
 
-  // Update mapping live when user changes a select
   document.querySelectorAll('.mapping-select').forEach(sel => {
     sel.onchange = () => {
       const field = sel.dataset.field;
       importPreviewData.mapping[field] = sel.value === '(none)' ? null : sel.value;
-      // Re-enable import button if name is now mapped
       const btn = document.getElementById('btn-do-import');
       if (btn) btn.disabled = !importPreviewData.mapping.name;
     };
@@ -1209,7 +1219,8 @@ function showImportResult(result) {
     <div class="import-result">
       <div class="import-result-num">${result.created}</div>
       <div class="import-result-label">companies imported successfully</div>
-      ${result.skipped ? `<div style="color:var(--text-muted);font-size:12px;margin-top:8px">${result.skipped} rows skipped (empty name)</div>` : ''}
+      ${result.contacts_created ? `<div style="color:var(--green);font-size:13px;margin-top:8px">+ ${result.contacts_created} contacts imported</div>` : ''}
+      ${result.skipped ? `<div style="color:var(--text-muted);font-size:12px;margin-top:6px">${result.skipped} rows skipped (empty name)</div>` : ''}
     </div>
     ${errHtml}
     <div class="modal-footer">
